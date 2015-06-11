@@ -5,78 +5,113 @@ from __future__ import division, print_function
 __all__ = []
 
 import numpy as np
+import scipy.optimize as op
 import matplotlib.pyplot as pl
 from scipy.linalg import cho_solve, cho_factor
-
-from .utils import convolution_indices
 
 
 class K2PSF(object):
 
     def __init__(self, mu, cov):
-        self.mu = mu
-        self.cov = cov
+        self.mu1 = mu
+        self.mu2 = mu
+        self.cov1 = np.array(cov)
+        cov[np.diag_indices_from(cov)] *= 4
+        self.cov2 = cov
+
+        self.alpha = 0.1
 
     @property
-    def cov(self):
-        return self._cov
+    def cov1(self):
+        return self._cov1
 
-    @cov.setter
-    def cov(self, cov):
-        self._cov = cov
-        self._factor = cho_factor(cov)
+    @cov1.setter
+    def cov1(self, cov):
+        self._cov1 = cov
+        self._factor1 = cho_factor(cov)
+        self._lndet1 = 2 * np.sum(np.log(np.diag(self._factor1[0])))
+
+    @property
+    def cov2(self):
+        return self._cov2
+
+    @cov2.setter
+    def cov2(self, cov):
+        self._cov2 = cov
+        self._factor2 = cho_factor(cov)
+        self._lndet2 = 2 * np.sum(np.log(np.diag(self._factor2[0])))
+
+    @property
+    def alpha(self):
+        return self._alpha
+
+    @alpha.setter
+    def alpha(self, a):
+        self._alpha = a
+        self.mixture = np.array([1. - a, a])
 
     def __call__(self, coords):
-        r = coords - self.mu
-        return np.exp(-0.5*np.dot(r, cho_solve(self._factor, r)))
+        r1 = (coords - self.mu1).T
+        m1 = np.exp(-0.5*(np.sum(r1 * cho_solve(self._factor1, r1), axis=0)
+                          + self._lndet1))
+        r2 = (coords - self.mu2).T
+        m2 = np.exp(-0.5*(np.sum(r2 * cho_solve(self._factor2, r2), axis=0)
+                          + self._lndet2))
+        return self.mixture[0] * m1 + self.mixture[1] * m2
+
+    def bounds(self):
+        return [
+            (-1., 1.), (-1., 1.),
+            (-4., 1.), (-4., 1.),
+            (-0.5, 0.5),
+            (0.1, 0.5),
+            (-1., 1.), (-1., 1.),
+            (-4., 1.), (-4., 1.),
+            (-0.5, 0.5),
+        ]
+
+    @property
+    def vector(self):
+        return np.concatenate((self.mu1, np.log(np.diag(self.cov1)),
+                               [self.cov1[1, 0], self.alpha],
+                               self.mu2, np.log(np.diag(self.cov2)),
+                               [self.cov2[1, 0]]))
+
+    @vector.setter
+    def vector(self, v):
+        self.mu1 = v[:2]
+        c = np.diag(np.exp(v[2:4]))
+        c[1, 0] = v[4]
+        c[0, 1] = v[4]
+        self.cov1 = c
+
+        self.alpha = v[5]
+        self.mu2 = v[6:8]
+        c = np.diag(np.exp(v[8:10]))
+        c[1, 0] = v[10]
+        c[0, 1] = v[10]
+        self.cov2 = c
 
 
 class K2Stack(object):
 
-    def __init__(self, frames, psf, sources, bkg_order=3, sup=2):
+    def __init__(self, frames, psf, sources, bkg_order=3):
         self.frames = frames
+        self.psf = psf
         self.sources = sources
 
         shape = self.frames.shape[1:]
         x, y = np.meshgrid(np.arange(shape[0]),
                            np.arange(shape[1]),
                            indexing="ij")
-        self.coords = np.vstack((x, y)).T
-        print(self.coords.shape)
-        assert 0
+        self.delta = (self.sources[:, None, :] -
+                      (np.vstack((x.flatten(), y.flatten())).T)[None, :, :])
 
-        self.psf = psf
-
-        # Build the base image.
-        base_shape = np.array(self.frames.shape[1:])
-        shape = sup * base_shape + np.array(self.psf.shape) - 1
-        self.base_images = np.zeros((len(self.sources), shape[0], shape[1]),
-                                    dtype=float)
-        x, y = np.meshgrid(np.arange(shape[0])/float(sup),
-                           np.arange(shape[1])/float(sup),
-                           indexing="ij")
-        self.psf_offset = (self.psf.shape[0] // 2,
-                           self.psf.shape[1] // 2)
-        x -= self.psf_offset[0] / float(sup)
-        y -= self.psf_offset[1] / float(sup)
-        for i, (xi, yi) in enumerate(self.sources):
-            r2 = (x - xi)**2 + (y - yi)**2
-            self.base_images[i] = np.exp(-0.5 * r2 / 0.5**2)
-            # r = np.sqrt((x - xi)**2 + (y - yi)**2)
-            # m = r < 1.0
-            # self.base_images[i, m] = r[m] / r[m].sum()
-
-        # Build the design matrix.
-        x, y = np.meshgrid(np.arange(base_shape[0]), np.arange(base_shape[1]),
-                           indexing="ij")
         self.A = np.concatenate((
-            np.empty((len(self.base_images), np.prod(base_shape))),
+            np.empty(self.delta.shape[:2]),
             np.vander(x.flatten(), bkg_order+1)[:, :-1].T,
             np.vander(y.flatten(), bkg_order+1).T
         ), axis=0)
-
-        # Get the convolution indices.
-        self.inds = convolution_indices(shape, self.psf.shape, sup=sup)
 
         # Initialize the light curves.
         self.light_curves = np.empty((len(self.frames), self.A.shape[0]))
@@ -131,7 +166,7 @@ class K2Stack(object):
 
         # Plot the background.
         ax = axes[1, 1]
-        n = len(self.base_images)
+        n = len(self.sources)
         bkg = np.dot(self.light_curves[ind, n:],
                      self.A[n:]).reshape(data.shape)
         ax.imshow(bkg.T, cmap="gray", interpolation="nearest")
@@ -141,26 +176,21 @@ class K2Stack(object):
 
         # Plot the PSF.
         ax = axes[1, 2]
-        ax.imshow(self.psf, cmap="gray", interpolation="nearest")
+        x, y = np.meshgrid(np.arange(-10, 10),
+                           np.arange(-10, 10),
+                           indexing="ij")
+        c = np.vstack((x.flatten(), y.flatten())).T
+        ax.imshow(self.psf(c).reshape(x.shape), cmap="gray",
+                  interpolation="nearest")
         ax.set_xticklabels([])
         ax.set_yticklabels([])
         ax.set_title("psf")
 
         return fig
 
-    def _get_base(self, flat=False):
-        n = len(self.base_images)
-        o = self.psf_offset
-        s = self.base_images.shape[1:]
-        bi = self.base_images[:, o[0]:o[0]+s[0], o[1]:o[1]+s[1]]
-        if flat:
-            return bi.reshape(n, -1)
-        return bi
-
     def _do_convolution(self):
-        flat_psf = self.psf.flatten()
-        for i, img in enumerate(self.base_images):
-            self.A[i] = np.dot(img[self.inds], flat_psf)
+        for i, r in enumerate(self.delta):
+            self.A[i] = self.psf(r)
 
     def update_light_curves(self):
         # First convolve by the PSF.
@@ -172,25 +202,28 @@ class K2Stack(object):
             ATy = np.dot(self.A, img.flatten())
             self.light_curves[i] = cho_solve(ATA, ATy, overwrite_b=True)
 
-        n = len(self.base_images)
+        n = len(self.sources)
         t = self.light_curves[:, :n]
         t[t < 0.0] = 0.0
         self.light_curves[:, :n] = t
 
-        return self.light_curves[:, :n], self.light_curves[:, n:]
+    def chi2(self, p):
+        try:
+            self.psf.vector = p
+        except np.linalg.LinAlgError:
+            return 1e15
+        self.update_light_curves()
 
-    def update_psf(self):
-        n = len(self.base_images)
-        bkg = np.dot(self.light_curves[:, n:], self.A[n:])
-        y = self.frames.reshape(len(self.frames), -1) - bkg
-
-        psf = np.zeros(np.prod(self.psf.shape))
+        r2 = 0.0
         for i, w in enumerate(self.light_curves):
-            img = np.sum(w[:n, None, None] * self.base_images, axis=0)
-            B = img[self.inds]
-            BT = B.T
-            psf += np.linalg.solve(np.dot(BT, B), np.dot(BT, y[i]))
-        self.psf = psf.reshape(self.psf.shape)
-        self.psf[self.psf < 0.0] = 0.0
-        self.psf /= np.sum(self.psf)
-        return self.psf
+            r2 += np.mean((self.frames[i].flatten() - np.dot(w, self.A))**2)
+        c2 = r2 / len(self.light_curves)
+        print(p, c2)
+        return c2
+
+    def optimize(self):
+        r = op.minimize(self.chi2, self.psf.vector, method="L-BFGS-B",
+                        bounds=self.psf.bounds())
+        self.psf.vector = r.x
+        self.update_light_curves()
+        print(r)

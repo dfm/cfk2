@@ -9,7 +9,7 @@ import numpy as np
 from astropy.wcs import WCS
 import matplotlib.pyplot as pl
 
-from cfk2.cfk2 import K2Stack
+from cfk2.cfk2 import K2Stack, K2PSF
 
 
 xrng = (300, 353)
@@ -35,17 +35,23 @@ tm_x = tm_x[m] - xrng[0] - 0.5
 tm_y = tm_y[m] - yrng[0]
 coords = np.array((tm_x, tm_y)).T
 
-psf_hw = 10
-px, py = np.meshgrid(range(-psf_hw, psf_hw+1), range(-psf_hw-1, psf_hw+2),
-                     indexing="ij")
-psf = np.exp(-0.5*(px**2 + py**2) / 1.0**2)
+# psf_hw = 10
+# px, py = np.meshgrid(range(-psf_hw, psf_hw+1), range(-psf_hw-1, psf_hw+2),
+#                      indexing="ij")
+# psf = np.exp(-0.5*(px**2 + py**2) / 1.0**2)
+psf = K2PSF(np.array([0.2, -0.05]), np.diag(np.exp([-1.123, -1.2098])))
 
 stack = K2Stack(frames, psf, coords)
-for i in range(5):
-    print(i)
-    stack.update_light_curves()
-    stack.update_psf()
-    fig = stack.plot_frame(-1)
-    fig.savefig("frames/{0:03d}.png".format(i), bbox_inches="tight")
-    pl.close(fig)
-    break
+# stack.update_light_curves()
+stack.optimize()
+fig = stack.plot_frame(-1)
+fig.savefig("frame.png", bbox_inches="tight")
+
+# for i in range(5):
+#     print(i)
+#     stack.update_light_curves()
+#     stack.update_psf()
+#     fig = stack.plot_frame(-1)
+#     fig.savefig("frames/{0:03d}.png".format(i), bbox_inches="tight")
+#     pl.close(fig)
+#     break
