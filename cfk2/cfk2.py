@@ -11,12 +11,41 @@ from scipy.linalg import cho_solve, cho_factor
 from .utils import convolution_indices
 
 
+class K2PSF(object):
+
+    def __init__(self, mu, cov):
+        self.mu = mu
+        self.cov = cov
+
+    @property
+    def cov(self):
+        return self._cov
+
+    @cov.setter
+    def cov(self, cov):
+        self._cov = cov
+        self._factor = cho_factor(cov)
+
+    def __call__(self, coords):
+        r = coords - self.mu
+        return np.exp(-0.5*np.dot(r, cho_solve(self._factor, r)))
+
+
 class K2Stack(object):
 
     def __init__(self, frames, psf, sources, bkg_order=3, sup=2):
         self.frames = frames
-        self.psf = psf / np.sum(psf)
         self.sources = sources
+
+        shape = self.frames.shape[1:]
+        x, y = np.meshgrid(np.arange(shape[0]),
+                           np.arange(shape[1]),
+                           indexing="ij")
+        self.coords = np.vstack((x, y)).T
+        print(self.coords.shape)
+        assert 0
+
+        self.psf = psf
 
         # Build the base image.
         base_shape = np.array(self.frames.shape[1:])
