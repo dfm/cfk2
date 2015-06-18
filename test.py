@@ -9,13 +9,13 @@ import numpy as np
 from astropy.wcs import WCS
 import matplotlib.pyplot as pl
 
-from cfk2.cfk2 import K2Stack, K2PSF
+from cfk2.cfk2 import K2Stack, GaussianPSF, QuadraticPSF, MixturePSF
 
 
-xrng = (300, 353)
-yrng = (650, 700)
+xrng = (200, 301)
+yrng = (400, 500)
 with h5py.File("image.h5", "r") as f:
-    frames = f["frames"][-500:, xrng[0]:xrng[1], yrng[0]:yrng[1]]
+    frames = f["frames"][-100:, xrng[0]:xrng[1], yrng[0]:yrng[1]]
 
 # Load the WCS.
 hdr = fitsio.read_header("wcs.fits")
@@ -35,13 +35,20 @@ tm_x = tm_x[m] - xrng[0] - 0.5
 tm_y = tm_y[m] - yrng[0]
 coords = np.array((tm_x, tm_y)).T
 
-# psf_hw = 10
-# px, py = np.meshgrid(range(-psf_hw, psf_hw+1), range(-psf_hw-1, psf_hw+2),
-#                      indexing="ij")
-# psf = np.exp(-0.5*(px**2 + py**2) / 1.0**2)
-psf = K2PSF(np.array([0.2, -0.05]), np.diag(np.exp([-1.123, -1.2098])))
+c = np.diag([0.5, 0.5])
+c[1, 0] = c[0, 1] = 1e-3
+mu = np.array([0.0, 0.0])
+psf = GaussianPSF(mu, c)
+# psf = MixturePSF(
+#     0.5,
+#     GaussianPSF(mu, c),
+#     GaussianPSF(mu, c * 2.0),
+# )
 
 stack = K2Stack(frames, psf, coords)
+
+print(stack.chi2(stack.psf.vector))
+
 # stack.update_light_curves()
 stack.optimize()
 fig = stack.plot_frame(-1)
